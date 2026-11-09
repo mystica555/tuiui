@@ -236,9 +236,12 @@ impl AppInstance {
                 let split = tap.feed(&buf[..n]);
                 if let Ok(mut t) = tclone.lock() {
                     parser.advance(&mut *t, &split.passthrough);
-                    if !split.commands.is_empty() {
+                    if !split.commands.is_empty() || !split.sixels.is_empty() {
                         let (col, row) = cursor_cell(&t);
                         if let Ok(mut g) = gclone.lock() {
+                            for sixel in &split.sixels {
+                                g.apply_sixel(sixel, col, row);
+                            }
                             for cmd in &split.commands {
                                 g.apply(cmd, col, row);
                             }

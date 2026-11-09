@@ -7,6 +7,12 @@ carry user-visible feature work and the occasional breaking config change.
 ## [Unreleased]
 
 ### Added
+- **Freebuff, Codebuff, and Antigravity CLI in the Store and Assistant.** The
+  AI category now offers Freebuff (`npm install -g freebuff`), Codebuff
+  (`npm install -g codebuff`), and Google's Antigravity CLI (`agy`, official
+  installer), each with a verified recipe and working-directory prompt. They
+  are also selectable in **Settings → Assistant** through the hosted-agent
+  cycle (`assistant_command`).
 - **The focused app's insertion caret is now visible.** The client drives the
   host terminal's real cursor at the focused PTY app's emulator cursor, so a
   shell prompt, `vim`, or `htop` shows where typing will land — separately
@@ -57,6 +63,12 @@ carry user-visible feature work and the occasional breaking config change.
   default).
 
 ### Fixed
+- **Graphics from hosted apps now render in `timg` and similar tools.** Kitty
+  transfers split across chunks were attributed to a fresh image id when
+  continuation chunks omitted `i=`, so the payload never decoded and the
+  image silently vanished; chunks now inherit the opener's id. Sixel DCS
+  output (e.g. `timg -ps`) is decoded into the same PNG/image-placement
+  pipeline instead of being swallowed by the emulator.
 - **Desktop and file-manager icons look intentional without Kitty graphics**
   (Termux / the Prism Android terminal, GNOME Terminal, Windows Terminal, …).
   The icon area used to show one small emoji floating above its label with

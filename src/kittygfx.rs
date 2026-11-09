@@ -35,6 +35,8 @@ impl GraphicsCmd {
 pub struct Split {
     pub passthrough: Vec<u8>,
     pub commands: Vec<GraphicsCmd>,
+    /// Completed sixel DCS bodies (bytes between `ESC P` and `ESC \`).
+    pub sixels: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -45,6 +47,8 @@ enum St {
     GfxControl,  // inside ESC _ G, before ';' — accumulating control
     GfxPayload,  // after ';' — accumulating payload
     GfxEsc,      // inside graphics APC, saw ESC, expecting '\'
+    Dcs,         // inside a DCS (ESC P …), buffering until ST
+    DcsEsc,      // inside a DCS, saw ESC, expecting '\'
     OtherApc,    // a non-graphics APC, pass through, scan for ESC \
     OtherApcEsc, // in OtherApc, saw ESC
 }
@@ -54,6 +58,7 @@ pub struct GraphicsTap {
     st: St,
     control: Vec<u8>,
     payload: Vec<u8>,
+    dcs: Vec<u8>,   // buffered DCS bytes (incl. ESC P) until ST
     other: Vec<u8>, // buffered non-graphics APC bytes (incl. introducer) to pass through
 }
 
@@ -63,7 +68,7 @@ impl Default for GraphicsTap {
 
 impl GraphicsTap {
     pub fn new() -> Self {
-        Self { st: St::Text, control: Vec::new(), payload: Vec::new(), other: Vec::new() }
+        Self { st: St::Text, control: Vec::new(), payload: Vec::new(), dcs: Vec::new(), other: Vec::new() }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Split {
@@ -75,8 +80,12 @@ impl GraphicsTap {
                 }
                 St::Esc => {
                     if b == b'_' { self.st = St::MaybeApc; }
-                    else {
-                        // not an APC: emit the ESC and this byte as text
+                    else if b == b'P' {
+                        self.dcs.clear();
+                        self.dcs.extend_from_slice(b"\x1bP");
+                        self.st = St::Dcs;
+                    } else {
+                        // not an APC or DCS: emit the ESC and this byte as text
                         out.passthrough.push(0x1b);
                         if b == 0x1b { self.st = St::Esc; } else { out.passthrough.push(b); self.st = St::Text; }
                     }
@@ -113,6 +122,29 @@ impl GraphicsTap {
                         if b == 0x1b { self.st = St::GfxEsc; } else { self.payload.push(b); self.st = St::GfxPayload; }
                     }
                 }
+                St::Dcs => {
+                    if self.dcs.len() >= MAX_DCS {
+                        out.passthrough.append(&mut self.dcs);
+                        self.st = St::Text;
+                    } else {
+                        self.dcs.push(b);
+                        if b == 0x1b { self.st = St::DcsEsc; }
+                    }
+                }
+                St::DcsEsc => {
+                    self.dcs.push(b);
+                    if b == b'\\' {
+                        let dcs = std::mem::take(&mut self.dcs);
+                        let body = if dcs.len() >= 4 { Some(&dcs[2..dcs.len() - 2]) } else { None };
+                        match body {
+                            Some(body) if is_sixel(body) => out.sixels.push(body.to_vec()),
+                            _ => out.passthrough.extend_from_slice(&dcs),
+                        }
+                        self.st = St::Text;
+                    } else if b != 0x1b {
+                        self.st = St::Dcs;
+                    }
+                }
                 St::OtherApc => {
                     self.other.push(b);
                     if b == 0x1b { self.st = St::OtherApcEsc; }
@@ -130,6 +162,18 @@ impl GraphicsTap {
         }
         out
     }
+}
+
+/// Upper bound on a buffered DCS so a hostile PTY can't grow memory without limit.
+const MAX_DCS: usize = 64 * 1024 * 1024;
+
+/// A sixel DCS has only numeric `;`-separated parameters before its `q`.
+fn is_sixel(body: &[u8]) -> bool {
+    let mut i = 0;
+    while i < body.len() && (body[i].is_ascii_digit() || body[i] == b';') {
+        i += 1;
+    }
+    body.get(i) == Some(&b'q')
 }
 
 use std::collections::HashMap;
@@ -171,6 +215,8 @@ pub struct Placement {
 pub struct GraphicsState {
     images: HashMap<u32, Vec<u8>>,    // id → PNG
     pending: HashMap<u32, Pending>,
+    current_id: Option<u32>,          // transmission id carried by APC continuations
+    sixel_seq: u32,                   // synthetic ids for sixel images
     pub placements: Vec<Placement>,
     pub queries: Vec<Vec<u8>>,        // a=q replies to write back to the PTY
     pub generation: u64,              // bumped on any change (session dirty check)
@@ -185,6 +231,8 @@ impl GraphicsState {
         Self {
             images: HashMap::new(),
             pending: HashMap::new(),
+            current_id: None,
+            sixel_seq: 0,
             placements: Vec::new(),
             queries: Vec::new(),
             generation: 0,
@@ -213,14 +261,26 @@ impl GraphicsState {
         let action = cmd.get('a').unwrap_or_else(|| "t".into());
         match action.as_str() {
             "t" | "T" => {
-                self.accumulate(cmd, action == "T", col, row);
+                // Continuation chunks (`m=1`, then the final `m=0`) legally omit
+                // `i=`; they inherit the opener's image id. Treating them as id 0
+                // splits a real emitter's payload across two pending entries, so
+                // the image never decodes.
+                let id = cmd
+                    .get('i')
+                    .and_then(|v| v.parse().ok())
+                    .or(self.current_id)
+                    .unwrap_or(0);
+                self.current_id = Some(id);
+                self.accumulate(cmd, action == "T", id, col, row);
                 if cmd.get('m').as_deref() != Some("1") {
-                    let id = Self::num(cmd, 'i', 0);
                     // Capture the opener's display intent before consuming `pending`.
                     if let Some((display, pc, pr, pcols, prows)) = self.finish_transmit(id) {
                         if display {
                             self.place_resolved(id, pc, pr, pcols, prows);
                         }
+                    }
+                    if self.current_id == Some(id) {
+                        self.current_id = None;
                     }
                 }
                 self.generation += 1;
@@ -236,11 +296,24 @@ impl GraphicsState {
         }
     }
 
+    /// Place a decoded sixel image at the cursor cell, using a synthetic id in a
+    /// range Kitty emitters are unlikely to use. Sixel has no image ids of its own.
+    pub fn apply_sixel(&mut self, body: &[u8], col: u16, row: u16) {
+        let Some(png) = crate::sixel::decode(body) else { return };
+        let mut id = 0xF000_0000u32.wrapping_add(self.sixel_seq);
+        self.sixel_seq = self.sixel_seq.wrapping_add(1);
+        while self.images.contains_key(&id) || self.pending.contains_key(&id) {
+            id = id.wrapping_add(1);
+        }
+        self.images.insert(id, png);
+        self.place_resolved(id, col, row, 0, 0);
+        self.generation += 1;
+    }
+
     /// Append a transmission chunk. The opener (first chunk for this id) sets the
     /// format/medium/dimensions and the display intent + placement; continuation
     /// chunks (`m=1`, no action) only append payload.
-    fn accumulate(&mut self, cmd: &GraphicsCmd, display: bool, col: u16, row: u16) {
-        let id = Self::num(cmd, 'i', 0);
+    fn accumulate(&mut self, cmd: &GraphicsCmd, display: bool, id: u32, col: u16, row: u16) {
         let e = self.pending.entry(id).or_insert_with(|| Pending {
             format: Self::num(cmd, 'f', 32),
             medium: cmd.get('t').and_then(|s| s.chars().next()).unwrap_or('d'),

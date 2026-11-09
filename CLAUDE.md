@@ -112,10 +112,10 @@ real terminal              composites frames, routes input    survives UI reload
 of truth for everything the in-app agent is told — embedded via
 `include_str!`, stamped into `~/.local/share/tuiui/assistant/` at launch as
 `AGENTS.md`, the context file the assistant reads on startup. tuiui
-standardises on the **opencode** CLI (`DEFAULT_AGENT`), with **hermes** as a
-supported alternative (`AGENTS`) — Settings → Assistant switches between the
-two, stored in `assistant_command`, which can also point the panel at any
-other binary by hand. There is no per-framework branching beyond that
+standardises on the **opencode** CLI (`DEFAULT_AGENT`), with **hermes**,
+**Freebuff**, **Codebuff**, and **Antigravity CLI** (`agy`) as selectable
+alternatives (`AGENTS`) — Settings → Assistant cycles them, stored in
+`assistant_command`, which can also point the panel at any other binary by hand. There is no per-framework branching beyond that
 switch — opencode is model-agnostic and MCP-extensible, so broader
 OS/computer-use control is added via MCP servers in opencode's own config
 rather than by adding frameworks here.

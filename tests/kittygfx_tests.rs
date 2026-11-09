@@ -1,3 +1,4 @@
+use image::GenericImageView;
 use tuiui::kittygfx::GraphicsTap;
 
 /// Build a Kitty graphics APC: ESC _ G <control> ; <payload> ESC \
@@ -59,7 +60,7 @@ fn transparency_invariant_for_non_graphics() {
         b"\x1b[0m\x1b[1;31mcolored\x1b[m",          // CSI SGR sequences
         b"\x1b]0;window title\x07rest",              // OSC terminated by BEL
         b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\", // OSC terminated by ST
-        b"\x1bPq#0;2;0;0;0\x1b\\",                   // DCS (sixel-like) terminated by ST
+        b"\x1bP$q\"m\"\x1b\\",                     // non-sixel DCS (DECRQSS) terminated by ST
         b"\x1b_Xnon-graphics apc\x1b\\tail",         // non-graphics APC
     ];
     for case in cases {
@@ -197,4 +198,49 @@ fn chunked_transmit_and_display_places_after_completion() {
     // Placement uses the OPENER's cursor (6,3) + c/r (4,2), not the final chunk's cursor.
     assert_eq!((p.col, p.row, p.cols, p.rows), (6, 3, 4, 2));
     assert!(st.png(0).is_some());
+}
+
+#[test]
+fn chunked_transmit_inherits_opener_id() {
+    // timg emits `a=T,i=N,m=1` on the opener, then bare `q=2,m=1` / `q=2,m=0`
+    // continuations. The continuation chunks must join the opener's pending
+    // image, not a second id-0 transmission.
+    use base64::Engine;
+    let raw: Vec<u8> = (0..16).map(|i| i as u8).collect();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+    let (a, rest) = b64.split_at(b64.len() / 3);
+    let (b, c) = rest.split_at(rest.len() / 2);
+    let mut st = GraphicsState::new();
+    st.apply(&tuiui::kittygfx::parse_one(&apc("a=T,f=32,s=2,v=2,c=4,r=2,i=77,m=1", a)), 6, 3);
+    st.apply(&tuiui::kittygfx::parse_one(&apc("q=2,m=1", b)), 9, 9);
+    assert!(st.png(77).is_none(), "still receiving");
+    st.apply(&tuiui::kittygfx::parse_one(&apc("q=2,m=0", c)), 9, 9);
+    assert!(st.png(77).is_some(), "continuations must inherit the opener id");
+    assert_eq!(st.placements.len(), 1);
+    let p = &st.placements[0];
+    assert_eq!((p.col, p.row, p.cols, p.rows), (6, 3, 4, 2));
+}
+
+#[test]
+fn sixel_dcs_is_captured_and_decoded() {
+    let input = b"before\x1bPq\"1;1;4;6#0;2;100;0;0#0~~~~\x1b\\after";
+    let mut tap = GraphicsTap::new();
+    let out = tap.feed(input);
+    assert_eq!(out.passthrough, b"beforeafter");
+    assert_eq!(out.sixels.len(), 1);
+    let png = tuiui::sixel::decode(&out.sixels[0]).expect("valid sixel");
+    let img = image::load_from_memory(&png).expect("decoded PNG");
+    assert_eq!(img.dimensions(), (4, 6));
+    assert_eq!(img.to_rgba8().get_pixel(0, 0).0, [255, 0, 0, 255]);
+}
+
+#[test]
+fn sixel_applies_as_placement() {
+    let body = b"q\"1;1;4;6#0;2;100;0;0#0~~~~";
+    let mut st = GraphicsState::new();
+    st.apply_sixel(body, 3, 2);
+    assert_eq!(st.placements.len(), 1);
+    let p = &st.placements[0];
+    assert_eq!((p.col, p.row), (3, 2));
+    assert!(st.png(p.image_id).is_some());
 }

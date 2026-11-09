@@ -27,10 +27,10 @@ const RULES_MD: &str = include_str!("../agent/RULES.md");
 pub const DEFAULT_AGENT: &str = "opencode";
 
 /// The agent CLIs the Assistant settings switch cycles between. `opencode` is
-/// the default; `hermes` is the supported alternative. Stored in
+/// the default; the rest are supported alternatives. Stored in
 /// `assistant_command`, so a hand-edited config can still point at any binary —
-/// the switch just flips between these two.
-pub const AGENTS: &[&str] = &["opencode", "hermes"];
+/// the switch just cycles through these supported agents.
+pub const AGENTS: &[&str] = &["opencode", "hermes", "freebuff", "codebuff", "agy"];
 
 /// Resolve the agent command + args. An explicit `assistant_command` override
 /// is trusted as-is (with `assistant_args`); otherwise we default to opencode,

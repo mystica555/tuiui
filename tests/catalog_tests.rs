@@ -40,6 +40,18 @@ fn ai_tools_require_cwd() {
     assert!(!tuiui::catalog::recipe("btop").map(|r| r.requires_cwd).unwrap_or(false));
 }
 
+#[test]
+fn freebuff_codebuff_and_antigravity_are_catalogued() {
+    for (name, bin) in [("Freebuff", "freebuff"), ("Codebuff", "codebuff"), ("Antigravity CLI", "agy")] {
+        let app = catalog().iter().find(|c| c.name == name).unwrap_or_else(|| panic!("{name} missing from catalog"));
+        assert_eq!(app.bin, bin);
+        assert_eq!(app.category, "AI");
+        let recipe = tuiui::catalog::recipe(name).unwrap_or_else(|| panic!("{name} missing a recipe"));
+        assert!(recipe.verified, "{name} recipe should be verified");
+        assert!(recipe.requires_cwd, "{name} is a coding agent and needs a project dir");
+    }
+}
+
 /// A catalog entry with no `"cli"` key parses with the field defaulting to
 /// `false` (TUI), so the 600+ existing entries don't churn.
 #[test]

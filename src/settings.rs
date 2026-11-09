@@ -245,8 +245,8 @@ impl Settings {
                     if self.cfg.assistant_mode == "panel" { "window".into() } else { "panel".into() };
             }
             (5, 1) => {
-                // Switch the agent between the supported CLIs (opencode ⇄ hermes),
-                // stored in `assistant_command`.
+                // Cycle the agent through the supported CLIs (opencode → hermes →
+                // freebuff → codebuff → agy), stored in `assistant_command`.
                 let agents = crate::assistant::AGENTS;
                 let cur = self
                     .cfg
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_section_switches_agent_between_opencode_and_hermes() {
+    fn assistant_section_cycles_supported_agents() {
         let mut s = Settings::new(Config::default());
         s.section = 5; // Assistant
         assert_eq!(SECTIONS[s.section], "Assistant");
@@ -655,9 +655,15 @@ mod tests {
         assert!(s.config().assistant_command.is_none(), "unset defaults to opencode");
         s.toggle(); // opencode -> hermes
         assert_eq!(s.config().assistant_command.as_deref(), Some("hermes"));
-        s.toggle(); // hermes -> opencode
+        s.toggle(); // hermes -> freebuff
+        assert_eq!(s.config().assistant_command.as_deref(), Some("freebuff"));
+        s.toggle(); // freebuff -> codebuff
+        assert_eq!(s.config().assistant_command.as_deref(), Some("codebuff"));
+        s.toggle(); // codebuff -> agy
+        assert_eq!(s.config().assistant_command.as_deref(), Some("agy"));
+        s.toggle(); // agy wraps to opencode
         assert_eq!(s.config().assistant_command.as_deref(), Some("opencode"));
-        s.left(); // wraps backward to hermes
-        assert_eq!(s.config().assistant_command.as_deref(), Some("hermes"));
+        s.left(); // wraps backward to agy
+        assert_eq!(s.config().assistant_command.as_deref(), Some("agy"));
     }
 }

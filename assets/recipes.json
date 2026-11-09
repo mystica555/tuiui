@@ -40,6 +40,17 @@
   "requires_cwd": true,
   "verified": true
  },
+ "Antigravity CLI": {
+  "install": "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+  "method": "script",
+  "os": [
+   "macos",
+   "linux"
+  ],
+  "requires_cwd": true,
+  "tip": "First run: `agy` completes Google sign-in (or use a Gemini API key); the installer puts the `agy` binary in ~/.local/bin.",
+  "verified": true
+ },
  "Argonaut": {
   "install": "brew tap darksworm/homebrew-tap && brew install darksworm/homebrew-tap/argonaut",
   "method": "brew",
@@ -201,6 +212,18 @@
   ],
   "verified": true
  },
+ "Codebuff": {
+  "install": "npm install -g codebuff",
+  "method": "npm",
+  "os": [
+   "macos",
+   "linux",
+   "windows"
+  ],
+  "requires_cwd": true,
+  "tip": "First run: `codebuff` in a project and sign in when prompted. Codebuff reads AGENTS.md/CLAUDE.md project files.",
+  "verified": true
+ },
  "Codex": {
   "install": "npm install -g @openai/codex",
   "method": "npm",
@@ -334,6 +357,18 @@
    "macos",
    "linux"
   ],
+  "verified": true
+ },
+ "Freebuff": {
+  "install": "npm install -g freebuff",
+  "method": "npm",
+  "os": [
+   "macos",
+   "linux",
+   "windows"
+  ],
+  "requires_cwd": true,
+  "tip": "First run: `freebuff` starts the agent and walks through sign-in; `freebuff doctor` checks the install.",
   "verified": true
  },
  "Fresh": {

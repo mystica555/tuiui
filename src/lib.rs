@@ -30,6 +30,7 @@ pub mod thumbnail;
 pub mod icons;
 pub mod kitty;
 pub mod kittygfx;
+pub mod sixel;
 pub mod imageview;
 pub mod openwith;
 pub mod fileops;

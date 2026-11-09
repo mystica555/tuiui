@@ -14,6 +14,13 @@
   "homepage": "https://ampcode.com"
  },
  {
+  "name": "Antigravity CLI",
+  "bin": "agy",
+  "category": "AI",
+  "description": "Google's agent-first CLI: an interactive terminal TUI for multi-step coding, file edits, and command execution.",
+  "homepage": "https://antigravity.google/product/antigravity-cli"
+ },
+ {
   "name": "Auggie",
   "bin": "auggie",
   "category": "AI",
@@ -35,6 +42,13 @@
   "homepage": "https://code.claude.com"
  },
  {
+  "name": "Codebuff",
+  "bin": "codebuff",
+  "category": "AI",
+  "description": "Terminal AI coding agent that coordinates specialized sub-agents to read, edit, and run code in your project.",
+  "homepage": "https://codebuff.com"
+ },
+ {
   "name": "Codex",
   "bin": "codex",
   "category": "AI",
@@ -54,6 +68,13 @@
   "category": "AI",
   "description": "A terminal-based agentic AI coding assistant that wires LLMs into your tools, code, and workflows.",
   "homepage": "https://github.com/charmbracelet/crush"
+ },
+ {
+  "name": "Freebuff",
+  "bin": "freebuff",
+  "category": "AI",
+  "description": "Free, ad-supported AI coding agent for the terminal with planning, sub-agents, and codebase-aware editing.",
+  "homepage": "https://freebuff.com"
  },
  {
   "name": "Gemini CLI",
