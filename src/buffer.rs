@@ -16,7 +16,7 @@ impl CellBuffer {
     }
     pub fn get(&self, x: i32, y: i32) -> Option<&Cell> { self.idx(x, y).map(|i| &self.cells[i]) }
     pub fn set(&mut self, x: i32, y: i32, c: Cell) { if let Some(i) = self.idx(x, y) { self.cells[i] = c; } }
-    pub fn fill(&mut self, c: Cell) { for cell in &mut self.cells { *cell = c; } }
+    pub fn fill(&mut self, c: Cell) { self.cells.fill(c); }
     pub fn write_str(&mut self, x: i32, y: i32, s: &str, fg: Rgba, bg: Rgba) {
         for (i, ch) in s.chars().enumerate() {
             self.set(x + i as i32, y, Cell { ch, fg, bg, attrs: Default::default() });

@@ -82,12 +82,7 @@ pub struct Recipe {
 
 /// The current operating system as a recipe `os` token ("macos", "linux", …).
 pub fn current_os() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "macos",
-        "linux" => "linux",
-        "windows" => "windows",
-        other => other,
-    }
+    std::env::consts::OS
 }
 
 /// Whether an app is applicable to the current OS (true unless its recipe lists
