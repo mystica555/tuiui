@@ -39,6 +39,10 @@ struct Cached {
     spawned_at: Option<Instant>,
     /// The app's OSC 0/2 title as of its last frame (v3+ apphosts).
     title: Option<String>,
+    /// The app's emulator cursor as of its last frame (v3+ apphosts).
+    cursor: Option<(u16, u16)>,
+    /// The app's DECSCUSR cursor style as of its last frame (v4+ apphosts).
+    cursor_style: Option<crate::ptyhost::CaretStyle>,
 }
 
 #[derive(Default)]
@@ -146,11 +150,13 @@ fn apply_evt(evt: HostEvt, cache: &Arc<Mutex<Cache>>, pending: &Pending, infligh
                 let _ = tx.send(Err(error));
             }
         }
-        HostEvt::Frame { app, grid, placements, images, alive, mouse, bells, clip, title, cursor: _ } => {
+        HostEvt::Frame { app, grid, placements, images, alive, mouse, bells, clip, title, cursor, cursor_style } => {
             let mut c = cache.lock().unwrap();
             let entry = c.apps.entry(AppId(app)).or_default();
             entry.grid = Some(grid);
             entry.title = title;
+            entry.cursor = cursor;
+            entry.cursor_style = cursor_style;
             entry.placements = placements;
             entry.alive = alive;
             entry.mouse = mouse;
@@ -324,6 +330,14 @@ impl AppHost for RemoteAppHost {
     fn title(&self, id: AppId) -> Option<String> {
         self.cache.lock().unwrap().apps.get(&id).and_then(|c| c.title.clone())
     }
+
+    fn cursor(&self, id: AppId) -> Option<(u16, u16)> {
+        self.cache.lock().unwrap().apps.get(&id).and_then(|c| c.cursor)
+    }
+
+    fn cursor_style(&self, id: AppId) -> Option<crate::ptyhost::CaretStyle> {
+        self.cache.lock().unwrap().apps.get(&id).and_then(|c| c.cursor_style)
+    }
 }
 
 #[cfg(test)]
@@ -353,7 +367,17 @@ mod tests {
         // Give the listener a moment, then connect a RemoteAppHost.
         std::thread::sleep(Duration::from_millis(50));
         let mut remote = RemoteAppHost::connect(&path).unwrap();
-        let id = remote.spawn("cat", &[], None, 40, 10).expect("spawn over socket");
+        // A shell that sets DECSCUSR steady-beam, then idles: the app's chosen
+        // cursor shape must survive the apphost→frontend hop.
+        let id = remote
+            .spawn(
+                "sh",
+                &["-c".into(), "printf '\\033[6 q'; sleep 5".into()],
+                None,
+                40,
+                10,
+            )
+            .expect("spawn over socket");
         // Must report alive IMMEDIATELY (before any frame), or the frontend's
         // per-tick reap_dead would close the brand-new window. (regression guard)
         assert!(remote.is_alive(id), "a freshly spawned app must be alive before its first frame");
@@ -371,6 +395,36 @@ mod tests {
         }
         assert!(got, "expected a frame for the spawned app");
         assert!(remote.is_alive(id));
+
+        // The cursor rides the same frame; an idle shell parks it at the
+        // top-left. This guards the RemoteAppHost cache plumbing.
+        let mut got_cursor = false;
+        for _ in 0..100 {
+            if remote.cursor(id).is_some() {
+                got_cursor = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(got_cursor, "the app cursor must reach the frontend");
+
+        // The DECSCUSR shape arrives with that frame and is cached too.
+        let mut got_style = None;
+        for _ in 0..100 {
+            if let Some(s) = remote.cursor_style(id) {
+                got_style = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(
+            got_style,
+            Some(crate::ptyhost::CaretStyle {
+                shape: crate::ptyhost::CaretShape::Beam,
+                blinking: false,
+            }),
+            "the DECSCUSR style must reach the frontend"
+        );
 
         remote.kill(id);
         remote.shutdown_apphost();

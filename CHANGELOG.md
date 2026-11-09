@@ -7,6 +7,22 @@ carry user-visible feature work and the occasional breaking config change.
 ## [Unreleased]
 
 ### Added
+- **The focused app's insertion caret is now visible.** The client drives the
+  host terminal's real cursor at the focused PTY app's emulator cursor, so a
+  shell prompt, `vim`, or `htop` shows where typing will land — separately
+  from the compositor's inverse-block mouse pointer. It hides when the app
+  hides its cursor, while the view is scrolled back, when focus moves to a
+  built-in window, while a floating panel or modal owns the keyboard, and
+  when another window covers that exact cell. The apphost wire already
+  carried the cursor (v3); this plumbs it through `AppHost`, `SessionCore`,
+  and the daemon/client frame.
+- **Cursor shapes are forwarded.** The focused app's DECSCUSR shape (block,
+  beam or underline; blinking or steady) is mirrored onto the host
+  terminal's caret, so `vim`'s insert-mode bar looks like a bar. Apps that
+  never set one keep the terminal's own configured shape. The inverse-block
+  mouse pointer now hides while it shares the caret's cell instead of
+  painting over the insertion point. Additive apphost protocol v4
+  (`MIN_COMPAT` unchanged, so no forced app restart).
 - **The app server serves several clients at once** (apphost protocol v3).
   The desktop daemon stays connected to the apphost for its whole life, so
   before this every other connection — `tuiui ps`, `tuiui kill-app` — queued

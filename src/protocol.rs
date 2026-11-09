@@ -16,6 +16,15 @@ use std::path::PathBuf;
 pub struct FrameMsg {
     pub changes: Vec<CellChange>,
     pub cursor: Option<Point>,
+    /// Screen-space insertion caret for the focused app's PTY, or `None`
+    /// when it is hidden. Additive: older daemons omit it (defaults to
+    /// hidden) and older clients ignore it.
+    #[serde(default)]
+    pub caret: Option<Point>,
+    /// The focused app's DECSCUSR cursor style, or `None` while it keeps the
+    /// terminal's configured shape. Additive: older daemons omit it.
+    #[serde(default)]
+    pub caret_style: Option<crate::ptyhost::CaretStyle>,
     pub flags: Flags,
     /// Image placements for this frame (where each visible image goes).
     #[serde(default)]

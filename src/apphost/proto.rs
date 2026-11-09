@@ -53,7 +53,12 @@ pub struct ImgBlob {
 /// `Frame.title` / `Frame.cursor`, `RosterEntry.pid`, `AppListEntry.meta` /
 /// `AppListEntry.title`. All additive — a v2 peer on either side degrades to
 /// v2 behaviour, so `MIN_COMPAT` stays put.
-pub const PROTO_VERSION: u32 = 3;
+///
+/// v4 — `Frame.cursor_style` carries the app's DECSCUSR shape (block / beam /
+/// underline, blinking or steady) so the frontend can mirror it onto the host
+/// terminal's hardware caret. Additive: a v3 apphost omits it and the frontend
+/// keeps the terminal's configured shape, so `MIN_COMPAT` stays put.
+pub const PROTO_VERSION: u32 = 4;
 
 /// The OLDEST apphost protocol this frontend can safely talk to. Apphosts
 /// predating the `proto` roster field report 0. Bump this to `PROTO_VERSION`
@@ -119,6 +124,10 @@ pub enum HostEvt {
         /// The emulator cursor `(col, row)` when visible (v3+).
         #[serde(default)]
         cursor: Option<(u16, u16)>,
+        /// The app's DECSCUSR cursor style when it differs from the emulator
+        /// default (v4+; `None` = unset / old apphost).
+        #[serde(default)]
+        cursor_style: Option<crate::ptyhost::CaretStyle>,
     },
     /// The app's child exited.
     Gone { app: u64 },
@@ -281,15 +290,23 @@ mod tests {
             clip: Some("copied".into()),
             title: Some("✳ my session".into()),
             cursor: Some((3, 1)),
+            cursor_style: Some(crate::ptyhost::CaretStyle {
+                shape: crate::ptyhost::CaretShape::Beam,
+                blinking: true,
+            }),
         };
         let mut buf: Vec<u8> = Vec::new();
         send(&mut buf, &evt).unwrap();
         let mut r = std::io::BufReader::new(&buf[..]);
         let back: HostEvt = recv(&mut r).unwrap().unwrap();
         match back {
-            HostEvt::Frame { app, grid: g, placements, images, alive, mouse, bells, clip, title, cursor } => {
+            HostEvt::Frame { app, grid: g, placements, images, alive, mouse, bells, clip, title, cursor, cursor_style } => {
                 assert_eq!(title.as_deref(), Some("✳ my session"));
                 assert_eq!(cursor, Some((3, 1)));
+                assert_eq!(cursor_style, Some(crate::ptyhost::CaretStyle {
+                    shape: crate::ptyhost::CaretShape::Beam,
+                    blinking: true,
+                }));
                 assert_eq!(app, 5);
                 assert_eq!(g, grid);
                 assert_eq!(placements.len(), 1);
@@ -311,17 +328,20 @@ mod tests {
         send(&mut buf, &HostEvt::Frame {
             app: 1, grid, placements: vec![], images: vec![], alive: true,
             mouse: Default::default(), bells: 0, clip: None, title: None, cursor: None,
+            cursor_style: None,
         }).unwrap();
         let mut v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
         let f = v.get_mut("Frame").unwrap().as_object_mut().unwrap();
         f.remove("title");
         f.remove("cursor");
+        f.remove("cursor_style");
         let line = format!("{}\n", serde_json::to_string(&v).unwrap());
         let mut r = std::io::BufReader::new(line.as_bytes());
         match recv::<HostEvt, _>(&mut r).unwrap().unwrap() {
-            HostEvt::Frame { title, cursor, .. } => {
+            HostEvt::Frame { title, cursor, cursor_style, .. } => {
                 assert!(title.is_none());
                 assert!(cursor.is_none());
+                assert!(cursor_style.is_none());
             }
             other => panic!("wrong variant {other:?}"),
         }

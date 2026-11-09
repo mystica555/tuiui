@@ -377,8 +377,14 @@ pub enum ClientMsg {
 pub struct Frame {
     /// Compositor layers ordered bottom-to-top.
     pub layers: Vec<Layer>,
-    /// Screen-space cursor position, or `None` if the cursor is hidden.
+    /// Screen-space position of the mouse pointer, or `None` if hidden.
     pub cursor: Option<Point>,
+    /// Screen-space insertion caret of the focused PTY app, or `None` when
+    /// it should be hidden (see `SessionCore::focused_app_caret`).
+    pub caret: Option<Point>,
+    /// The focused app's DECSCUSR cursor style, or `None` while it keeps the
+    /// emulator/host default (and whenever the caret is hidden).
+    pub caret_style: Option<crate::ptyhost::CaretStyle>,
     /// Image placements (Kitty graphics) for the visible ImageView windows.
     pub images: Vec<crate::protocol::ImagePlacement>,
 }
@@ -973,6 +979,61 @@ impl SessionCore {
         !self.wm.z_ordered().iter().any(|o| {
             !o.minimized && o.z > win.z && o.rect.intersect(cr).is_some()
         })
+    }
+
+    /// Screen cell where the focused app's insertion caret belongs, or `None`
+    /// when it should stay hidden.
+    ///
+    /// `content` is where the app is drawn: its window's content rect in
+    /// desktop mode, or the simple-mode work area. The caret is suppressed
+    /// while any floating panel or modal owns the keyboard, while the app's
+    /// emulator hides its cursor or is scrolled back (`AppHost::cursor`
+    /// already returns `None` for both), and when a higher window covers that
+    /// exact cell — a per-cell check, unlike image visibility, so a window
+    /// over another part of the shell cannot hide a visible prompt.
+    ///
+    /// Returns the caret cell plus the app's DECSCUSR style (when it differs
+    /// from the emulator default) in one pass, so the focus/occlusion checks
+    /// are not duplicated.
+    fn focused_app_caret(
+        &self,
+        content: Rect,
+        overlays: &[Rect],
+    ) -> Option<(Point, Option<crate::ptyhost::CaretStyle>)> {
+        if !overlays.is_empty()
+            || self.dock_ctx.is_some()
+            || self.dock_popup.is_some()
+            || self.rename.is_some()
+            || self.desktop.overlay_rect().is_some()
+            || self.launcher.is_open()
+            || self.tray.open().is_some()
+            || self.power_menu.is_open()
+            || self.dirpicker.is_some()
+            || self.help_open
+            || self.confirm_close.is_open()
+            || self.launch_warn.is_open()
+            || self.compat_dialog
+        {
+            return None;
+        }
+        let wid = self.wm.focused()?;
+        let win = self.wm.get(wid)?;
+        if win.minimized {
+            return None;
+        }
+        let aid = match self.contents.get(&wid) {
+            Some(WinContent::App(aid)) => *aid,
+            _ => return None,
+        };
+        let (col, row) = self.apphost.cursor(aid)?;
+        let p = Point::new(content.x + col as i32, content.y + row as i32);
+        if !content.contains(p) || p.x < 0 || p.y < 0 || p.x >= self.w || p.y >= self.h {
+            return None;
+        }
+        if !self.simple && cell_covered(&self.wm.z_ordered(), win.z, p) {
+            return None;
+        }
+        Some((p, self.apphost.cursor_style(aid)))
     }
 
     /// PNG bytes for an image id currently held in the store (for the daemon's
@@ -3899,6 +3960,16 @@ or a remote-side error — its authorized_keys was left untouched)",
         // open overlay's rect — the launcher/power-menu/help/tray panels and the
         // desktop context menu. Only icons actually under a menu are removed, so
         // a top-left launcher leaves the top-right icons as image tiles.
+        // The focused app's insertion caret is a separate, hardware-cursor
+        // channel: it must not compete with the compositor's inverse-block
+        // mouse pointer below. Compute it before `overlay_rects` is consumed.
+        let caret_info = self
+            .wm
+            .focused()
+            .and_then(|id| self.wm.get(id))
+            .map(|w| w.content_rect())
+            .and_then(|cr| self.focused_app_caret(cr, &overlay_rects));
+
         let mut menu_rects = overlay_rects;
         if let Some(dm) = self.desktop.overlay_rect() {
             menu_rects.push(dm);
@@ -3908,7 +3979,11 @@ or a remote-side error — its authorized_keys was left untouched)",
         }
         sanitize_images(&mut images, self.w, self.h);
 
-        Frame { layers, cursor: Some(self.cursor), images }
+        let (caret, caret_style) = match caret_info {
+            Some((p, style)) => (Some(p), style),
+            None => (None, None),
+        };
+        Frame { layers, cursor: mouse_pointer(caret, self.cursor), caret, caret_style, images }
     }
 
     /// Build the frame for simple (full-screen single-app) view: the focused
@@ -4020,7 +4095,11 @@ or a remote-side error — its authorized_keys was left untouched)",
         images.retain(|p| overlay_rects.iter().all(|o| o.intersect(p.rect).is_none()));
         sanitize_images(&mut images, self.w, self.h);
 
-        Frame { layers, cursor: Some(self.cursor), images }
+        let (caret, caret_style) = match self.focused_app_caret(wa, &overlay_rects) {
+            Some((p, style)) => (Some(p), style),
+            None => (None, None),
+        };
+        Frame { layers, cursor: mouse_pointer(caret, self.cursor), caret, caret_style, images }
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -4160,6 +4239,12 @@ fn expand_tilde(s: &str) -> std::path::PathBuf {
 /// double-click-to-rename work without nudging the window).
 const DRAG_THRESHOLD: i32 = 3;
 
+/// The mouse pointer for a frame: hidden when it shares the hardware caret's
+/// cell, so the inverse-video block cannot paint over the insertion point.
+fn mouse_pointer(caret: Option<Point>, at: Point) -> Option<Point> {
+    if caret == Some(at) { None } else { Some(at) }
+}
+
 /// True when `p` is within `threshold` cells of any edge of `work` — the band in
 /// which a drag engages grid-cell snapping (interior drags stay floating).
 fn near_edge(p: Point, work: Rect, threshold: i32) -> bool {
@@ -4177,6 +4262,13 @@ fn near_edge(p: Point, work: Rect, threshold: i32) -> bool {
 /// too; they would be entirely invisible anyway.
 fn sanitize_images(images: &mut Vec<crate::protocol::ImagePlacement>, w: i32, h: i32) {
     images.retain(|p| p.rect.x >= 0 && p.rect.y >= 0 && p.rect.x < w && p.rect.y < h);
+}
+
+/// Is screen cell `p` covered by a non-minimized window stacked above `z`?
+/// Used by the caret gate: a window covering another part of an app must not
+/// hide a prompt that is still visible.
+fn cell_covered(windows: &[&crate::window::Window], z: i32, p: Point) -> bool {
+    windows.iter().any(|o| !o.minimized && o.z > z && o.rect.contains(p))
 }
 
 /// Check the upstream repository for a newer commit than this build.
@@ -4615,5 +4707,34 @@ mod tests {
         sanitize_images(&mut images, 100, 30);
         let origins: Vec<(i32, i32)> = images.iter().map(|p| (p.rect.x, p.rect.y)).collect();
         assert_eq!(origins, vec![(0, 0), (99, 29)]);
+    }
+
+    #[test]
+    fn caret_occlusion_is_per_cell_and_ignores_minimized_windows() {
+        use crate::window::{Window, WindowId, WindowState};
+        fn win(id: u64, z: i32, rect: crate::geometry::Rect, minimized: bool) -> Window {
+            Window {
+                id: WindowId(id),
+                title: String::new(),
+                rect,
+                z,
+                state: WindowState::Floating,
+                restore_rect: rect,
+                minimized,
+            }
+        }
+        let focused = win(1, 1, crate::geometry::Rect::new(0, 0, 20, 10), false);
+        let elsewhere = win(2, 2, crate::geometry::Rect::new(40, 0, 20, 10), false);
+        assert!(
+            !cell_covered(&[&focused, &elsewhere], 1, crate::geometry::Point::new(2, 2)),
+            "a window covering another part of the app must not hide the caret"
+        );
+        let over = win(3, 3, crate::geometry::Rect::new(1, 1, 4, 4), false);
+        assert!(cell_covered(&[&focused, &over], 1, crate::geometry::Point::new(2, 2)));
+        let hidden = win(4, 4, crate::geometry::Rect::new(1, 1, 4, 4), true);
+        assert!(
+            !cell_covered(&[&focused, &hidden], 1, crate::geometry::Point::new(2, 2)),
+            "minimized windows never occlude"
+        );
     }
 }

@@ -316,6 +316,8 @@ fn serve_client(
         let mut buf = serde_json::to_vec(&FrameMsg {
             changes,
             cursor: frame.cursor,
+            caret: frame.caret,
+            caret_style: frame.caret_style,
             flags,
             images: frame.images.clone(),
             image_data,

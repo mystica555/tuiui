@@ -85,6 +85,13 @@ pub trait AppHost: Send {
     /// The app's own OSC 0/2 window title, if it set one (default none).
     fn title(&self, id: AppId) -> Option<String> { let _ = id; None }
 
+    /// The app's emulator cursor `(col, row)` when visible (default none).
+    fn cursor(&self, _id: AppId) -> Option<(u16, u16)> { None }
+
+    /// The app's DECSCUSR cursor style when it differs from the emulator's
+    /// startup default (default none = keep the host terminal's own shape).
+    fn cursor_style(&self, _id: AppId) -> Option<crate::ptyhost::CaretStyle> { None }
+
     /// The app's current terminal mouse mode (default = no mouse).
     fn mouse_mode(&self, id: AppId) -> crate::mouse::AppMouse { let _ = id; crate::mouse::AppMouse::default() }
 

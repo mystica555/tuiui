@@ -1,4 +1,6 @@
+use tuiui::apphost::{AppHost, AppId};
 use tuiui::chrome::DockKind;
+use tuiui::ptyhost::{CaretShape, CaretStyle};
 use tuiui::session::{SessionCore, ClientMsg};
 use tuiui::config::{AppEntry, Config};
 use tuiui::geometry::Point;
@@ -830,4 +832,176 @@ fn other_apps_keep_their_label_unless_follow_app_titles() {
     let mut core = SessionCore::new(100, 30, cfg);
     core.apply(ClientMsg::Launch { name: "Shell".into(), command: "sh".into(), args: script });
     assert!(wait_for_label(&mut core, "user@host: ~"), "follow_app_titles opts every app in");
+}
+
+/// A host with no real PTY: it reports a fixed emulator cursor and a grid, so
+/// caret tests don't depend on a shell's prompt behaviour.
+struct FixedCursorHost {
+    id: AppId,
+    cursor: Option<(u16, u16)>,
+    style: Option<CaretStyle>,
+    dims: (i32, i32),
+}
+
+impl AppHost for FixedCursorHost {
+    fn spawn(
+        &mut self,
+        _cmd: &str,
+        _args: &[String],
+        _cwd: Option<&std::path::Path>,
+        cols: i32,
+        rows: i32,
+    ) -> std::io::Result<AppId> {
+        self.dims = (cols, rows);
+        Ok(self.id)
+    }
+
+    fn input(&mut self, _id: AppId, _bytes: &[u8]) {}
+
+    fn resize(&mut self, _id: AppId, cols: i32, rows: i32) {
+        self.dims = (cols, rows);
+    }
+
+    fn kill(&mut self, _id: AppId) {}
+
+    fn is_alive(&mut self, id: AppId) -> bool {
+        id == self.id
+    }
+
+    fn snapshot(&self, id: AppId) -> Option<tuiui::buffer::CellBuffer> {
+        (id == self.id).then(|| {
+            tuiui::buffer::CellBuffer::new(self.dims.0.max(1), self.dims.1.max(1))
+        })
+    }
+
+    fn placements(&self, _id: AppId) -> Vec<tuiui::kittygfx::Placement> {
+        Vec::new()
+    }
+
+    fn image_png(&self, _id: AppId, _image_id: u32) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn list(&self) -> Vec<AppId> {
+        vec![self.id]
+    }
+
+    fn set_meta(&mut self, _id: AppId, _meta: Vec<u8>) {}
+
+    fn meta(&self, _id: AppId) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn remove(&mut self, _id: AppId) {}
+
+    fn cursor(&self, id: AppId) -> Option<(u16, u16)> {
+        if id == self.id { self.cursor } else { None }
+    }
+
+    fn cursor_style(&self, id: AppId) -> Option<CaretStyle> {
+        if id == self.id { self.style } else { None }
+    }
+}
+
+fn caret_core_with_style(cursor: Option<(u16, u16)>, style: Option<CaretStyle>) -> SessionCore {
+    let mut core = SessionCore::with_apphost(
+        80,
+        24,
+        Config { apps: vec![], desktop_enabled: false, ..Config::default() },
+        Box::new(FixedCursorHost { id: AppId(1), cursor, style, dims: (78, 22) }),
+    );
+    core.apply(ClientMsg::Launch {
+        name: "shell".into(),
+        command: "sh".into(),
+        args: Vec::new(),
+    });
+    core
+}
+
+fn caret_core(cursor: Option<(u16, u16)>) -> SessionCore {
+    caret_core_with_style(cursor, None)
+}
+
+/// The focused window's content origin plus a local grid cell.
+fn caret_at(core: &SessionCore, col: i32, row: i32) -> Point {
+    let r = core.focused_window_rect_for_test().expect("focused window");
+    Point::new(r.x + 1 + col, r.y + 1 + row)
+}
+
+#[test]
+fn caret_follows_focused_apps_emulator_cursor() {
+    let mut core = caret_core(Some((3, 2)));
+    let frame = core.build_frame();
+    assert_eq!(frame.caret, Some(caret_at(&core, 3, 2)));
+    assert!(frame.caret_style.is_none(), "no DECSCUSR = host default shape");
+    core.shutdown();
+}
+
+#[test]
+fn caret_forwards_the_apps_decscusr_style() {
+    let style = CaretStyle { shape: CaretShape::Beam, blinking: false };
+    let mut core = caret_core_with_style(Some((3, 2)), Some(style));
+    assert_eq!(core.build_frame().caret_style, Some(style));
+    core.shutdown();
+}
+
+#[test]
+fn mouse_pointer_yields_the_cell_to_the_hardware_caret() {
+    let mut core = caret_core(Some((3, 2)));
+    let caret = caret_at(&core, 3, 2);
+    core.apply(ClientMsg::MouseDown(caret));
+    let frame = core.build_frame();
+    assert_eq!(frame.caret, Some(caret));
+    assert_eq!(frame.cursor, None, "the inverse mouse block must not cover the caret");
+    core.shutdown();
+}
+
+#[test]
+fn caret_hidden_when_host_reports_no_cursor() {
+    let mut core = caret_core(None);
+    assert!(core.build_frame().caret.is_none());
+    core.shutdown();
+}
+
+#[test]
+fn caret_hidden_when_focus_is_not_an_app() {
+    let mut core = caret_core(Some((3, 2)));
+    core.apply(ClientMsg::OpenSettings);
+    assert!(core.focused_is_settings());
+    assert!(core.build_frame().caret.is_none());
+    core.shutdown();
+}
+
+#[test]
+fn caret_hidden_when_app_is_minimized() {
+    let mut core = caret_core(Some((3, 2)));
+    core.apply(ClientMsg::MinimizeFocused);
+    assert!(core.build_frame().caret.is_none());
+    core.shutdown();
+}
+
+#[test]
+fn caret_hidden_while_launcher_overlay_is_open() {
+    let mut core = caret_core(Some((3, 2)));
+    core.apply(ClientMsg::ToggleMenu);
+    assert!(core.build_frame().caret.is_none());
+    core.shutdown();
+}
+
+#[test]
+fn caret_hidden_when_the_cell_is_outside_the_app() {
+    let mut core = caret_core(Some((500, 0)));
+    assert!(core.build_frame().caret.is_none());
+    core.shutdown();
+}
+
+#[test]
+fn simple_mode_maps_the_caret_into_the_work_area() {
+    use tuiui::chrome::menubar_mode_region;
+    let mut core = caret_core(Some((3, 2)));
+    core.apply(ClientMsg::MouseDown(Point::new(menubar_mode_region().x, 0)));
+    assert!(core.simple_mode());
+    let frame = core.build_frame();
+    assert_eq!(frame.caret, Some(Point::new(3, 1 + 2)));
+    core.shutdown();
 }

@@ -238,7 +238,9 @@ impl Drop for Terminal {
             cursor,
         };
         use std::io::Write;
-        let _ = write!(self.out, "\x1b[?1003l"); // disable all-motion mouse tracking
+        // Disable all-motion mouse tracking and hand the cursor back in the
+        // host's own configured shape (apps may have set DECSCUSR).
+        let _ = write!(self.out, "\x1b[?1003l\x1b[0 q");
         let _ = execute!(
             self.out,
             DisableMouseCapture,

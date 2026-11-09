@@ -99,6 +99,7 @@ struct ConnState {
     last_mouse: HashMap<AppId, crate::mouse::AppMouse>,
     last_title: HashMap<AppId, Option<String>>,
     last_cursor: HashMap<AppId, Option<(u16, u16)>>,
+    last_cursor_style: HashMap<AppId, Option<crate::ptyhost::CaretStyle>>,
     sent_images: HashMap<AppId, HashSet<u32>>,
     /// Bell total / clipboard sequence already forwarded on THIS connection.
     bells_seen: HashMap<AppId, u64>,
@@ -118,6 +119,7 @@ impl ConnState {
         self.last_mouse.remove(&id);
         self.last_title.remove(&id);
         self.last_cursor.remove(&id);
+        self.last_cursor_style.remove(&id);
         self.sent_images.remove(&id);
         self.bells_seen.remove(&id);
         self.clip_seen.remove(&id);
@@ -281,8 +283,8 @@ fn list_apps(host: &mut LocalAppHost) -> Vec<AppListEntry> {
 
 /// Build this connection's outgoing events for one tick: `Gone` for apps that
 /// exited (or that another connection already reaped), and a `Frame` for
-/// every watched app whose grid / placements / mouse mode / title / cursor
-/// changed or that has new images, bells or a clipboard store.
+/// every watched app whose grid / placements / mouse mode / title / cursor /
+/// cursor style changed or that has new images, bells or a clipboard store.
 fn collect_frames(host: &mut LocalAppHost, st: &mut ConnState) -> Vec<HostEvt> {
     let mut out = Vec::new();
     let ids: Vec<AppId> = host.list();
@@ -310,6 +312,7 @@ fn collect_frames(host: &mut LocalAppHost, st: &mut ConnState) -> Vec<HostEvt> {
         let mouse = host.mouse_mode(id);
         let title = AppHost::title(host, id);
         let cursor = host.cursor(id);
+        let cursor_style = AppHost::cursor_style(host, id);
 
         // New image blobs (not yet sent to this frontend).
         let seen = st.sent_images.entry(id).or_default();
@@ -339,7 +342,8 @@ fn collect_frames(host: &mut LocalAppHost, st: &mut ConnState) -> Vec<HostEvt> {
             || st.last_placements.get(&id) != Some(&placements)
             || st.last_mouse.get(&id) != Some(&mouse)
             || st.last_title.get(&id) != Some(&title)
-            || st.last_cursor.get(&id) != Some(&cursor);
+            || st.last_cursor.get(&id) != Some(&cursor)
+            || st.last_cursor_style.get(&id) != Some(&cursor_style);
         if changed || !images.is_empty() || bells > 0 || clip.is_some() {
             out.push(HostEvt::Frame {
                 app: id.0,
@@ -352,12 +356,14 @@ fn collect_frames(host: &mut LocalAppHost, st: &mut ConnState) -> Vec<HostEvt> {
                 clip,
                 title: title.clone(),
                 cursor,
+                cursor_style,
             });
             st.last_grid.insert(id, grid);
             st.last_placements.insert(id, placements);
             st.last_mouse.insert(id, mouse);
             st.last_title.insert(id, title);
             st.last_cursor.insert(id, cursor);
+            st.last_cursor_style.insert(id, cursor_style);
         }
     }
     out

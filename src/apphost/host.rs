@@ -168,6 +168,14 @@ impl AppHost for LocalAppHost {
         self.apps.get(&id).and_then(|a| a.title())
     }
 
+    fn cursor(&self, id: AppId) -> Option<(u16, u16)> {
+        self.apps.get(&id).and_then(|a| a.cursor())
+    }
+
+    fn cursor_style(&self, id: AppId) -> Option<crate::ptyhost::CaretStyle> {
+        self.apps.get(&id).and_then(|a| a.cursor_style())
+    }
+
     fn inject_test_image(&self, id: AppId, png: &[u8]) {
         if let Some(app) = self.apps.get(&id) {
             let mut g = app.graphics();
@@ -235,6 +243,38 @@ mod tests {
         let snap = host.snapshot(id).expect("snapshot");
         assert_eq!(snap.width(), 80);
         assert_eq!(snap.height(), 24);
+        host.kill(id);
+    }
+
+    #[test]
+    fn cursor_is_visible_at_the_initial_shell_position() {
+        let mut host = LocalAppHost::new();
+        let id = host.spawn("cat", &[], None, 20, 5).unwrap();
+        assert_eq!(AppHost::cursor(&host, id), Some((0, 0)));
+        host.kill(id);
+    }
+
+    #[test]
+    fn cursor_style_follows_decscusr() {
+        let mut host = LocalAppHost::new();
+        let id = host
+            .spawn("sh", &["-c".into(), "printf '\\033[6 q'; sleep 5".into()], None, 20, 5)
+            .unwrap();
+        let mut got = None;
+        for _ in 0..100 {
+            if let Some(s) = AppHost::cursor_style(&host, id) {
+                got = Some(s);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            got,
+            Some(crate::ptyhost::CaretStyle {
+                shape: crate::ptyhost::CaretShape::Beam,
+                blinking: false,
+            })
+        );
         host.kill(id);
     }
 

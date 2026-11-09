@@ -5,7 +5,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::Config;
-use alacritty_terminal::vte::ansi::{Color as AColor, NamedColor, Processor, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{Color as AColor, CursorShape, CursorStyle, NamedColor, Processor, StdSyncHandler};
 use alacritty_terminal::Term;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
@@ -18,6 +18,23 @@ const DEFAULT_FG: Rgba = Rgba { r: 200, g: 208, b: 220, a: 255 };
 // Matches the window panel color (wm::WIN_BG) so an app's default-background
 // cells blend seamlessly into the window rather than showing a mismatched fill.
 const DEFAULT_BG: Rgba = Rgba { r: 17, g: 20, b: 29, a: 255 };
+
+/// Insertion-caret shape set by the app's DECSCUSR sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaretShape {
+    Block,
+    Beam,
+    Underline,
+}
+
+/// The app's cursor style: shape plus whether it blinks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CaretStyle {
+    pub shape: CaretShape,
+    #[serde(default)]
+    pub blinking: bool,
+}
 
 /// Forwards the embedded terminal's replies back to the child over the PTY.
 ///
@@ -108,6 +125,10 @@ pub struct AppInstance {
     shared: Arc<SharedEvents>,
     cols: u16,
     rows: u16,
+    /// The emulator's cursor style at spawn. An app "owns" a style only once
+    /// DECSCUSR moves away from this, so the host terminal keeps its own
+    /// configured shape until then.
+    default_cursor_style: CursorStyle,
     /// Wall-clock instant the child was spawned. Used by the activity monitor to
     /// show how long each app has been running.
     spawned_at: Instant,
@@ -188,6 +209,9 @@ impl AppInstance {
             &TermSize::new(cols as usize, rows as usize),
             PtyResponder { writer: writer.clone(), bells: bells.clone(), clip: clip.clone(), shared: shared.clone() },
         )));
+        // Snapshot the startup style before any app output arrives: a shell
+        // that never sends DECSCUSR must not override the host's own caret.
+        let default_cursor_style = term.lock().unwrap().cursor_style();
 
         // Captured Kitty-graphics state, shared with the reader thread.
         let graphics = Arc::new(Mutex::new(crate::kittygfx::GraphicsState::new()));
@@ -234,7 +258,7 @@ impl AppInstance {
             }
         });
 
-        Ok(AppInstance { term, master: pair.master, writer, child, graphics, bells, clip, shared, cols, rows, spawned_at: Instant::now() })
+        Ok(AppInstance { term, master: pair.master, writer, child, graphics, bells, clip, shared, cols, rows, default_cursor_style, spawned_at: Instant::now() })
     }
 
     /// Bell rings since the last call (drained).
@@ -272,6 +296,30 @@ impl AppInstance {
             return None;
         }
         Some(cursor_cell(&t))
+    }
+
+    /// The app's DECSCUSR cursor style, or `None` while it still matches the
+    /// emulator's startup default (the host terminal should then keep its own
+    /// configured cursor shape).
+    pub fn cursor_style(&self) -> Option<CaretStyle> {
+        let t = self.term.lock().ok()?;
+        let style = t.cursor_style();
+        if style.shape == self.default_cursor_style.shape
+            && style.blinking == self.default_cursor_style.blinking
+        {
+            return None;
+        }
+        Some(CaretStyle {
+            shape: match style.shape {
+                // The host terminal has no hollow block; a block block is the
+                // closest match, and `Hidden` never reaches a visible caret.
+                CursorShape::Block | CursorShape::HollowBlock => CaretShape::Block,
+                CursorShape::Beam => CaretShape::Beam,
+                CursorShape::Underline => CaretShape::Underline,
+                CursorShape::Hidden => return None,
+            },
+            blinking: style.blinking,
+        })
     }
 
     /// Convert the current emulator grid into a Tuiui [`CellBuffer`].

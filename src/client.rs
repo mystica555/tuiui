@@ -17,6 +17,7 @@ pub enum ClientExit {
 
 use crate::geometry::{Point, SnapZone};
 use crate::protocol::{Flags, FrameMsg};
+use crate::ptyhost::{CaretShape, CaretStyle};
 use crate::session::ClientMsg;
 use crate::terminal::{frame_to_ansi, Terminal};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -65,6 +66,13 @@ pub fn run(stream: UnixStream) -> std::io::Result<ClientExit> {
             // displayed for each (so we only re-place on move/resize).
             let mut transmitted: std::collections::HashSet<u64> = std::collections::HashSet::new();
             let mut active: std::collections::HashMap<u32, (u64, i32, i32, u16, u16)> = std::collections::HashMap::new();
+            // Host-terminal cursor state for the focused app's caret: the last
+            // position we placed it at, and whether DECTCEM is currently on.
+            let mut caret_shown = false;
+            let mut caret_at: Option<Point> = None;
+            // DECSCUSR style currently applied to the host cursor (None = the
+            // terminal's own configured shape).
+            let mut caret_style: Option<CaretStyle> = None;
             loop {
                 line.clear();
                 match r.read_line(&mut line) {
@@ -99,6 +107,21 @@ pub fn run(stream: UnixStream) -> std::io::Result<ClientExit> {
                                 let g = reconcile_images(&msg, &mut transmitted, &mut active);
                                 let _ = out.write_all(g.as_bytes());
                             }
+                            // Place the hardware caret last: every cell change
+                            // moves the terminal's own cursor, and image ops
+                            // save/restore around their CUPs. Reposition after
+                            // any paint, but toggle DECTCEM only on visibility
+                            // changes so the terminal's blink phase survives.
+                            let painted = !msg.changes.is_empty() || msg.clear;
+                            let caret = caret_ansi(
+                                msg.caret,
+                                msg.caret_style,
+                                painted,
+                                &mut caret_shown,
+                                &mut caret_at,
+                                &mut caret_style,
+                            );
+                            let _ = out.write_all(caret.as_bytes());
                             let _ = out.flush();
                             if msg.flags.reload {
                                 reload.store(true, Ordering::SeqCst);
@@ -558,16 +581,78 @@ pub(crate) fn encode_key(code: KeyCode, mods: KeyModifiers) -> Vec<u8> {
     }
 }
 
+/// ANSI to style/move/show/hide the focused app's hardware caret.
+///
+/// `shown`, `at` and `style` are the terminal's current caret state; repeated
+/// frames only re-emit the CUP when the caret moved or cells were painted
+/// (which leaves the terminal's cursor somewhere else), only toggle DECTCEM on
+/// visibility transitions, and only emit DECSCUSR when the app's shape changes.
+fn caret_ansi(
+    caret: Option<Point>,
+    style: Option<CaretStyle>,
+    painted: bool,
+    shown: &mut bool,
+    at: &mut Option<Point>,
+    applied_style: &mut Option<CaretStyle>,
+) -> String {
+    let mut s = String::new();
+    match caret {
+        Some(p) if p.x >= 0 && p.y >= 0 => {
+            if *applied_style != style {
+                s.push_str(&decscusr_ansi(style));
+                *applied_style = style;
+            }
+            if painted || *at != Some(p) || !*shown {
+                s.push_str(&format!("\x1b[{};{}H", p.y + 1, p.x + 1));
+                *at = Some(p);
+            }
+            if !*shown {
+                s.push_str("\x1b[?25h");
+                *shown = true;
+            }
+        }
+        _ => {
+            if *shown {
+                s.push_str("\x1b[?25l");
+                *shown = false;
+            }
+            if applied_style.take().is_some() {
+                // Hand the cursor back in the host's own configured shape
+                // rather than leaving the app's beam/underline behind.
+                s.push_str("\x1b[0 q");
+            }
+            *at = None;
+        }
+    }
+    s
+}
+
+/// DECSCUSR (CSI Ps SP q) for a caret style; `None` restores the host default.
+fn decscusr_ansi(style: Option<CaretStyle>) -> String {
+    let ps = match style {
+        None => 0,
+        Some(CaretStyle { shape: CaretShape::Block, blinking: true }) => 1,
+        Some(CaretStyle { shape: CaretShape::Block, blinking: false }) => 2,
+        Some(CaretStyle { shape: CaretShape::Underline, blinking: true }) => 3,
+        Some(CaretStyle { shape: CaretShape::Underline, blinking: false }) => 4,
+        Some(CaretStyle { shape: CaretShape::Beam, blinking: true }) => 5,
+        Some(CaretStyle { shape: CaretShape::Beam, blinking: false }) => 6,
+    };
+    format!("\x1b[{ps} q")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Rect;
+    use crate::geometry::{Point, Rect};
     use crate::protocol::ImagePlacement;
 
     fn frame_with(images: Vec<ImagePlacement>) -> FrameMsg {
         FrameMsg {
             changes: Vec::new(),
             cursor: None,
+            caret: None,
+            caret_style: None,
             flags: Flags::default(),
             images,
             image_data: Vec::new(),
@@ -620,6 +705,46 @@ mod tests {
         let g = reconcile_images(&frame_with(Vec::new()), &mut transmitted, &mut active);
         assert!(g.contains("a=d,d=i,i=7"), "stale placement deleted: {g:?}");
         assert!(active.is_empty());
+    }
+
+    #[test]
+    fn caret_ansi_shows_moves_and_hides_only_on_change() {
+        let mut shown = false;
+        let mut at = None;
+        let mut style = None;
+        assert_eq!(
+            caret_ansi(Some(Point::new(2, 3)), None, false, &mut shown, &mut at, &mut style),
+            "\x1b[4;3H\x1b[?25h"
+        );
+        assert_eq!(caret_ansi(Some(Point::new(2, 3)), None, false, &mut shown, &mut at, &mut style), "");
+        assert_eq!(caret_ansi(Some(Point::new(2, 3)), None, true, &mut shown, &mut at, &mut style), "\x1b[4;3H");
+        assert_eq!(caret_ansi(Some(Point::new(5, 1)), None, false, &mut shown, &mut at, &mut style), "\x1b[2;6H");
+        assert_eq!(caret_ansi(None, None, true, &mut shown, &mut at, &mut style), "\x1b[?25l");
+        assert_eq!(caret_ansi(None, None, true, &mut shown, &mut at, &mut style), "");
+    }
+
+    #[test]
+    fn caret_ansi_forwards_decscusr_and_restores_default_on_hide() {
+        let beam = CaretStyle { shape: CaretShape::Beam, blinking: false };
+        let mut shown = false;
+        let mut at = None;
+        let mut style = None;
+        let out = caret_ansi(Some(Point::new(1, 1)), Some(beam), false, &mut shown, &mut at, &mut style);
+        assert_eq!(out, "\x1b[6 q\x1b[2;2H\x1b[?25h");
+        assert_eq!(
+            caret_ansi(Some(Point::new(1, 1)), Some(beam), false, &mut shown, &mut at, &mut style),
+            "",
+            "an unchanged shape is not re-sent"
+        );
+        assert_eq!(
+            caret_ansi(None, Some(beam), true, &mut shown, &mut at, &mut style),
+            "\x1b[?25l\x1b[0 q",
+            "hiding restores the host's configured cursor shape"
+        );
+        assert_eq!(
+            caret_ansi(Some(Point::new(1, 1)), None, false, &mut shown, &mut at, &mut style),
+            "\x1b[2;2H\x1b[?25h"
+        );
     }
 }
 

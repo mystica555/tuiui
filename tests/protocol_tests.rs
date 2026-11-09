@@ -1,5 +1,6 @@
 use tuiui::session::ClientMsg;
 use tuiui::protocol::{FrameMsg, Flags};
+use tuiui::ptyhost::{CaretShape, CaretStyle};
 use tuiui::compositor::CellChange;
 use tuiui::cell::{Cell, Rgba};
 use tuiui::geometry::Point;
@@ -23,6 +24,8 @@ fn frame_msg_roundtrips_json() {
     let f = FrameMsg {
         changes: vec![CellChange { x: 1, y: 2, cell: Cell { ch: 'A', fg: Rgba::rgb(1,2,3), bg: Rgba::rgb(4,5,6), attrs: Default::default() } }],
         cursor: Some(Point::new(5, 6)),
+        caret: Some(Point::new(7, 8)),
+        caret_style: Some(CaretStyle { shape: CaretShape::Underline, blinking: true }),
         flags: Flags { launcher_open: true, ..Default::default() },
         images: Vec::new(),
         image_data: Vec::new(),
@@ -41,6 +44,11 @@ fn frame_msg_roundtrips_json() {
     let back: FrameMsg = serde_json::from_str(&s).unwrap();
     assert_eq!(back.changes.len(), 1);
     assert_eq!(back.changes[0].cell.ch, 'A');
+    assert_eq!(back.caret, Some(Point::new(7, 8)));
+    assert_eq!(
+        back.caret_style,
+        Some(CaretStyle { shape: CaretShape::Underline, blinking: true })
+    );
     assert!(back.flags.launcher_open);
     assert!(back.clear);
     let spec = back.switch_to.expect("switch spec survives the round trip");
@@ -55,6 +63,8 @@ fn frame_msg_clear_defaults_off_for_older_daemons() {
     let s = r#"{"changes":[],"cursor":null,"flags":{}}"#;
     let f: FrameMsg = serde_json::from_str(s).unwrap();
     assert!(!f.clear);
+    assert!(f.caret.is_none(), "an older daemon's frame hides the caret");
+    assert!(f.caret_style.is_none(), "an older daemon leaves the host's cursor shape");
     assert!(f.switch_to.is_none());
     assert!(!f.flags.power_editing);
 }
